@@ -1,0 +1,14 @@
+{
+  "servers": [
+    {
+      "name": "Project Zomboid Dedicated Server",
+      "appid": "380870",
+      "keywords": ["pz", "zomboid", "zombie"]
+    },
+    {
+      "name": "Palworld Dedicated Server",
+      "appid": "2394010",
+      "keywords": ["palworld", "pal"]
+    }
+  ]
+}
