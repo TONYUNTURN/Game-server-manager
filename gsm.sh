@@ -234,10 +234,61 @@ start_server() {
   elif [ -f "./TerrariaServer" ]; then
     cmd="./TerrariaServer -config $data_dir/serverconfig.txt"
   else
-    echo "可执行文件列表（供参考）："
-    find . -maxdepth 1 -type f -executable -printf "%f\n" || ls -1
-    read -p "请输入启动命令 (或 0 取消): " cmd
-    if [ "$cmd" = "0" ] || [ -z "$cmd" ]; then return 1; fi
+    echo "未找到默认启动脚本。"
+    echo "正在搜索可能的启动文件..."
+
+    # 搜索候选文件 (深度2, 排除常见的非可执行后缀, 查找 .sh, .x86, 无后缀文件等)
+    # 使用 while read loop 将结果存入数组
+    local candidates=()
+    local i=0
+    
+    # 构建 find 命令查找:
+    # 1. 必须是文件 (-type f)
+    # 2. 深度最多 2 (-maxdepth 2)
+    # 3. 排除特定后缀 (如 .so, .dll, .txt, .json, .c, .h, .md)
+    # 4. 或者是 executable, 或者是 .sh, 或者是无后缀
+    # 注意: find 的逻辑比较复杂，这里简化策略：列出所有非屏蔽后缀的文件，然后由用户选择
+    
+    while IFS= read -r file; do
+      candidates+=("$file")
+    done < <(find . -maxdepth 2 -type f \
+      ! -name "*.so" ! -name "*.so.*" \
+      ! -name "*.dll" ! -name "*.txt" \
+      ! -name "*.json" ! -name "*.xml" \
+      ! -name "*.conf" ! -name "*.ini" \
+      ! -name "*.c" ! -name "*.h" ! -name "*.o" \
+      ! -name "*.md" ! -name "*.png" ! -name "*.jpg" \
+      ! -name "*.log" ! -name "*.dat" ! -name "*.db" \
+      ! -path "./Steam/*" ! -path "./steamapps/*" \
+      | sort)
+
+    if [ ${#candidates[@]} -eq 0 ]; then
+       echo "未找到任何可疑的启动文件。"
+       read -p "请手动输入启动命令 (0 取消): " cmd
+       if [ "$cmd" = "0" ] || [ -z "$cmd" ]; then return 1; fi
+    else
+       echo "找到以下文件，请选择启动项："
+       for i in "${!candidates[@]}"; do
+          # 显示文件名 (去掉 ./)
+          echo -e " ${C_CYAN}[$((i+1))]${C_RESET} ${candidates[$i]}"
+       done
+       
+       read -p "请输入序号 (1-${#candidates[@]}) 或 0 取消: " idx
+       if [ "$idx" == "0" ] || [ -z "$idx" ]; then return 1; fi
+       
+       if ! [[ "$idx" =~ ^[0-9]+$ ]] || [ "$idx" -gt ${#candidates[@]} ]; then
+          print_error "无效的序号。"
+          return 1
+       fi
+       
+       cmd="${candidates[$((idx-1))]}"
+       
+       # 自动赋予执行权限
+       if [ ! -x "$cmd" ]; then
+          echo "正在赋予执行权限: $cmd"
+          chmod +x "$cmd"
+       fi
+    fi
   fi
 
   echo "使用命令启动: $cmd"
