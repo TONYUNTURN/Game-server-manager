@@ -15,13 +15,13 @@ SERVERS_DIR="$BASE_DIR/servers"
 DATA_DIR="$BASE_DIR/data"
 
 # ========= UI Colors & Styles =========
-C_RESET='\033[0m'
-C_RED='\033[0;31m'
-C_GREEN='\033[0;32m'
-C_YELLOW='\033[0;33m'
-C_BLUE='\033[0;34m'
-C_CYAN='\033[0;36m'
-C_BOLD='\033[1m'
+C_RESET=$'\033[0m'
+C_RED=$'\033[0;31m'
+C_GREEN=$'\033[0;32m'
+C_YELLOW=$'\033[0;33m'
+C_BLUE=$'\033[0;34m'
+C_CYAN=$'\033[0;36m'
+C_BOLD=$'\033[1m'
 
 print_header() {
   local title="$1"
@@ -56,7 +56,12 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
+# Global Array for Interactive Selection
+SERVER_LIST_IDS=()
+
 # ========= 辅助函数 =========
+SERVER_LIST_IDS=()
+
 ensure_deps() {
   local NEED="curl jq screen wget tar"
   local miss=()
@@ -182,11 +187,11 @@ install_or_update_game() {
   if [ "$game_name" = "$appid" ]; then
      echo -e "${C_YELLOW}未能解析出游戏名称。${C_RESET}"
      read -p "是否继续安装? (y/n): " confirm_unk
-     if [ "$confirm_unk" != "y" ]; then print_info "已取消"; return; fi
+     if [ "$confirm_unk" != "y" ]; then print_info "已取消"; return 1; fi
   else
      echo -e "即将安装: ${C_GREEN}$game_name${C_RESET}"
-     read -p "确认安装? (y/n): " confirm_go
-     if [ "$confirm_go" != "y" ]; then print_info "已取消"; return; fi
+     read -p "确认安装? (y/n, 0取消): " confirm_go
+     if [ "$confirm_go" != "y" ]; then print_info "已取消"; return 1; fi
      
      # 保存到 known_servers
      save_known_server "$game_name" "$appid" "$game_name"
@@ -231,7 +236,8 @@ start_server() {
   else
     echo "可执行文件列表（供参考）："
     find . -maxdepth 1 -type f -executable -printf "%f\n" || ls -1
-    read -p "请输入启动命令 (例如 ./MyServerBinary 或 java -jar server.jar): " cmd
+    read -p "请输入启动命令 (或 0 取消): " cmd
+    if [ "$cmd" = "0" ] || [ -z "$cmd" ]; then return 1; fi
   fi
 
   echo "使用命令启动: $cmd"
@@ -276,10 +282,10 @@ delete_server() {
   fi
 
   # 强确认（避免误删）
-  read -p "确认要永久删除 AppID $appid 的安装与数据？此操作不可恢复，请输入：yes 来确认: " confirm
+  read -p "确认要永久删除 AppID $appid 的安装与数据？(输入 yes 确认, 0 取消): " confirm
   if [ "$confirm" != "yes" ]; then
-    echo "删除已取消（确认输入不是 yes）"
-    return
+    echo "删除已取消"
+    return 1
   fi
 
   # 备份选项（建议）
@@ -478,6 +484,8 @@ get_running_sessions_cached() {
 
 list_servers() {
   print_header "已安装服务器列表"
+  SERVER_LIST_IDS=()
+  
   if [ ! -d "$SERVERS_DIR" ]; then
     echo "  (无)"
     return
@@ -488,14 +496,18 @@ list_servers() {
   running_txt=$(screen -ls || true)
   
   local any=0
+  local i=0
   
   # Table Header
-  printf "${C_BOLD}%-30s %-15s %-10s${C_RESET}\n" "游戏名称" "状态" "AppID"
-  echo "--------------------------------------------------------"
+  printf "${C_BOLD}%-4s %-30s %-15s %-10s${C_RESET}\n" "NO." "GAME NAME" "STATUS" "APPID"
+  echo "------------------------------------------------------------"
 
   # 遍历目录
   for appid in $(find "$SERVERS_DIR" -maxdepth 1 -type d -printf "%f\n" 2>/dev/null | grep -E '^[1-9][0-9]*$' | sort -n || true); do
     any=1
+    i=$((i+1))
+    SERVER_LIST_IDS+=("$appid")
+    
     # 尝试快速获取名称 (local preferred)
     local name
     name=$(get_game_name "$appid")
@@ -503,11 +515,11 @@ list_servers() {
     local session="game-$appid"
     local status=""
     if echo "$running_txt" | grep -q "\.${session}"; then
-      status="${C_GREEN}运行中${C_RESET}"
+      status="${C_GREEN}RUNNING${C_RESET}"
     else
-      status="${C_RED}停止${C_RESET}"
+      status="${C_RED}STOPPED${C_RESET}"
     fi
-    printf "%-30s %-25s %s\n" "$name" "$status" "$appid"
+    printf "${C_CYAN}[%d]${C_RESET}  %-30s %-25s %s\n" "$i" "$name" "$status" "$appid"
   done
 
   if [ "$any" -eq 0 ]; then
@@ -522,17 +534,62 @@ list_running_servers() {
   local ids
   ids=$(echo "$running_txt" | grep -o "game-[0-9]\+" | sed 's/game-//' | sort | uniq)
   
+  SERVER_LIST_IDS=()
+  
   if [ -z "$ids" ]; then
      return 1
   fi
   
+  local i=0
   for appid in $ids; do
+     i=$((i+1))
+     SERVER_LIST_IDS+=("$appid")
      local name
      name=$(get_game_name "$appid")
      # Clean output for dashboard
-     printf "  ${C_GREEN}●${C_RESET} %-20s (ID: %s)\n" "$name" "$appid"
+     printf " ${C_CYAN}[%d]${C_RESET} ${C_GREEN}●${C_RESET} %-20s (ID: %s)\n" "$i" "$name" "$appid"
   done
   return 0
+}
+
+# Helper for interactive selection
+select_server_interactive() {
+  local prompt="${1:-请选择序号 (0 返回): }"
+  
+  # If list is empty, just read ID manually? Or return 0?
+  if [ ${#SERVER_LIST_IDS[@]} -eq 0 ]; then
+      read -p "无列表，请输入 AppID (0 返回): " manual_id
+      echo "$manual_id"
+      return
+  fi
+  
+  read -p "$prompt" idx
+  
+  # Check cancel
+  if [[ "$idx" == "0" || -z "$idx" ]]; then
+      echo "0"
+      return
+  fi
+  
+  # Check if number
+  if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+      # Assume text input is manual ID? Or error?
+      # Let's assume error for safety in "Index Mode", usually user won't type ID if they see [1] [2]
+      print_error "请输入有效的数字序号。" >&2
+      echo "0"
+      return
+  fi
+  
+  # Check range
+  if [ "$idx" -gt ${#SERVER_LIST_IDS[@]} ]; then
+      print_error "序号超出范围。" >&2
+      echo "0"
+      return
+  fi
+  
+  # Get AppID
+  local real_id="${SERVER_LIST_IDS[$((idx-1))]}"
+  echo "$real_id"
 }
 
 
@@ -643,14 +700,14 @@ steam_search_and_install() {
   
   check_network || print_warn "Steam API 连通性检查失败。"
 
-  read -p "搜索关键词 (英文，例: zomboid): " TERM
-  if [ -z "$TERM" ]; then
+  read -p "搜索关键词 (英文，例: zomboid): " SEARCH_KEYWORD
+  if [ -z "$SEARCH_KEYWORD" ]; then
     print_info "关键词为空，取消。"
     return
   fi
   
   local term_lower
-  term_lower=$(echo "$TERM" | tr 'A-Z' 'a-z')
+  term_lower=$(echo "$SEARCH_KEYWORD" | tr 'A-Z' 'a-z')
   
   local merged_results="/tmp/search_results_$$.txt"
   touch "$merged_results"
@@ -666,12 +723,12 @@ steam_search_and_install() {
   
   # 2. Search Steam App Cache
   if [ -f "$SERVER_CACHE_FILE" ]; then
-     grep -i "$TERM" "$SERVER_CACHE_FILE" >> "$merged_results" || true
+     grep -i "$SEARCH_KEYWORD" "$SERVER_CACHE_FILE" >> "$merged_results" || true
   fi
   
   # 3. Search Web API
   local term_encoded
-  term_encoded=$(printf '%s' "$TERM" | jq -s -R -r @uri)
+  term_encoded=$(printf '%s' "$SEARCH_KEYWORD" | jq -s -R -r @uri)
   local res
   res=$(curl -s --max-time 5 "https://store.steampowered.com/api/storesearch/?term=${term_encoded}&l=english&cc=US")
   if [ -n "$res" ]; then
@@ -728,59 +785,83 @@ while true; do
   echo -e "${C_BOLD}${C_BLUE}GSM - Game Server Manager${C_RESET}"
   echo ""
   
-  # Dashboard
-  if list_running_servers > /dev/null; then
-      echo -e "${C_GREEN}=== Active Servers ===${C_RESET}"
-      list_running_servers
-      echo ""
-  fi
+  # Dashboard (Always Show Installed Servers)
+  # list_servers now handles the visuals for the dashboard
+  list_servers
 
-  echo -e "${C_BOLD}--- [ 主菜单 ] ---${C_RESET}"
-  echo -e " ${C_CYAN}1)${C_RESET} 已安装服务器        ${C_CYAN}5)${C_RESET} 通过 AppID 安装"
-  echo -e " ${C_CYAN}2)${C_RESET} 启动服务器          ${C_CYAN}6)${C_RESET} 备份服务器数据"
-  echo -e " ${C_CYAN}3)${C_RESET} 停止服务器          ${C_CYAN}7)${C_RESET} 执行 Env 配置"
-  echo -e " ${C_CYAN}4)${C_RESET} 搜索 & 安装         ${C_CYAN}8)${C_RESET} 删除服务器 ${C_RED}[危险]${C_RESET}"
-  echo -e " ${C_CYAN}0)${C_RESET} 退出"
+  echo -e "${C_BOLD}--- [ Main Menu ] ---${C_RESET}"
+  echo -e " ${C_CYAN}1)${C_RESET} List Installed Servers   ${C_CYAN}5)${C_RESET} Install by AppID (Direct)"
+  echo -e " ${C_CYAN}2)${C_RESET} Start Server           ${C_CYAN}6)${C_RESET} Backup Server Data"
+  echo -e " ${C_CYAN}3)${C_RESET} Stop Server            ${C_CYAN}7)${C_RESET} Exec Env Config"
+  echo -e " ${C_CYAN}4)${C_RESET} Search & Install       ${C_CYAN}8)${C_RESET} Delete Server ${C_RED}[DANGER]${C_RESET}"
+  echo -e " ${C_CYAN}0)${C_RESET} Exit"
   echo ""
   
   read -p "Select option: " choice
   echo ""
   
   case "$choice" in
-    1) list_servers ;;
+    1) 
+       clear
+       list_servers 
+       ;;
     2)
+       clear
        list_servers
-       read -p "启动 AppID: " appid
+       appid=$(select_server_interactive "启动 AppID (序号/0返回): ")
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && start_server "$appid"
        ;;
     3)
-       list_running_servers || echo "No running servers."
-       read -p "停止 AppID: " appid
+       clear
+       echo -e "${C_GREEN}=== Active Servers ===${C_RESET}"
+       list_running_servers || { echo "No running servers."; continue; }
+       echo ""
+       appid=$(select_server_interactive "停止 AppID (序号/0返回): ")
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && stop_server "$appid"
        ;;
-    4) steam_search_and_install ;;
+    4) 
+       clear
+       steam_search_and_install 
+       ;;
     5)
-       read -p "输入AppID: " appid
+       clear
+       read -p "输入AppID (0 返回): " appid
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && install_or_update_game "$appid"
        ;;
     6)
+       clear
        list_servers
-       read -p "备份 AppID: " appid
+       appid=$(select_server_interactive "备份 AppID (序号/0返回): ")
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && backup_save "$appid"
        ;;
     7)
-       read -p "AppID for Env: " appid
+       clear
+       # Env is typically manual ID or installed? 
+       # Let's assume installed for now, use list_servers
+       list_servers
+       appid=$(select_server_interactive "AppID for Env (序号/0返回): ")
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
        source_game_env "$appid"
        ;;
     8)
+       clear
        list_servers
-       read -p "删除 AppID: " appid
+       appid=$(select_server_interactive "删除 AppID (序号/0返回): ")
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && delete_server "$appid"
        ;;
-    0) echo "感谢使用脚本"; exit 0 ;;
-    *) print_error "无效选项" ;;
+    0) echo "Bye."; exit 0 ;;
+    *) print_error "Invalid option" ;;
   esac
   
-  echo ""
-  read -p "按 Enter 继续..." dummy
+  # Auto-refresh: If action returned 1 (cancel), skip pause
+  # If action returned 0 (success/info), pause for user to read
+  if [ $? -eq 0 ]; then
+     echo ""
+     read -p "Press Enter to continue..." dummy
+  fi
 done
