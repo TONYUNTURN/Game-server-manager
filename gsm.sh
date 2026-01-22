@@ -226,14 +226,35 @@ start_server() {
 
   cd "$game_dir"
 
+  cd "$game_dir"
+
+  # 1. Check saved command
+  local saved_cmd
+  saved_cmd=$(get_saved_start_cmd "$appid")
+  
   local cmd=""
-  if [ -f "./start-server.sh" ]; then
-    cmd="./start-server.sh -batch -cachedir=$data_dir"
-  elif [ -f "./ProjectZomboid64" ]; then
-    cmd="./ProjectZomboid64"
-  elif [ -f "./TerrariaServer" ]; then
-    cmd="./TerrariaServer -config $data_dir/serverconfig.txt"
-  else
+  
+  if [ -n "$saved_cmd" ] && [ -f "$saved_cmd" ] || [ -f "./$saved_cmd" ]; then
+      # Handle relative path check issue if saved_cmd is just filename
+      if [ -f "$saved_cmd" ]; then
+         cmd="$saved_cmd"
+      elif [ -f "./$saved_cmd" ]; then
+         cmd="./$saved_cmd"
+      fi
+      
+      if [ -n "$cmd" ]; then
+         echo "发现已保存的启动命令: $cmd"
+      fi
+  fi
+  
+  if [ -z "$cmd" ]; then
+      if [ -f "./start-server.sh" ]; then
+        cmd="./start-server.sh -batch -cachedir=$data_dir"
+      elif [ -f "./ProjectZomboid64" ]; then
+        cmd="./ProjectZomboid64"
+      elif [ -f "./TerrariaServer" ]; then
+        cmd="./TerrariaServer -config $data_dir/serverconfig.txt"
+      else
     echo "未找到默认启动脚本。"
     echo "正在搜索可能的启动文件..."
 
@@ -288,8 +309,14 @@ start_server() {
           echo "正在赋予执行权限: $cmd"
           chmod +x "$cmd"
        fi
+       
+       # 保存选择 (Persistence)
+       # Strip ./ for cleaner JSON? Or keep it?
+       # Keep as is to ensure it works.
+       save_start_cmd "$appid" "$cmd"
     fi
   fi
+  fi # End check cmd
 
   echo "使用命令启动: $cmd"
   screen -dmS "$session" bash -lc "exec $cmd"
@@ -658,6 +685,61 @@ backup_save() {
 # ========= 新增：Steam 搜索并安装（使用 jq 做 URL encode，避免 python 依赖） =========
 # 解析 Dedicated Server AppID
 
+
+# 获取已保存的启动命令
+get_saved_start_cmd() {
+  local appid="$1"
+  if [ ! -f "$KNOWN_SERVERS_FILE" ]; then return; fi
+  
+  # jq query: find matching appid, extract cmd
+  jq -r --arg id "$appid" '.servers[] | select(.appid == $id) | .cmd // empty' "$KNOWN_SERVERS_FILE" 2>/dev/null
+}
+
+# 保存启动命令到 known_servers
+save_start_cmd() {
+  local appid="$1"
+  local cmd="$2"
+  
+  if [ ! -f "$KNOWN_SERVERS_FILE" ]; then 
+      echo '{"servers": []}' > "$KNOWN_SERVERS_FILE"
+  fi
+  
+  local tmp_json
+  tmp_json=$(mktemp)
+  
+  # Logic:
+  # 1. Check if entry exists for this appid
+  # 2. If exists, update .cmd
+  # 3. If not exists, create new entry with name="Unknown" (shouldn't happen usually if installed via GSM)
+  
+  # Easier way: select entry, update.
+  # If entry doesn't exist, we might need to add it, but normally we only save cmd for installed games which should be in known_servers if installed via Option 5 or searched.
+  # But if user installed manually or ID lookup failed, it might not be there.
+  
+  # Let's try to update if exists.
+  jq --arg id "$appid" --arg c "$cmd" '
+    (
+      .servers |= map(if .appid == $id then . + {"cmd": $c} else . end)
+    )
+  ' "$KNOWN_SERVERS_FILE" > "$tmp_json"
+  
+  # Check if it was updated (dirty check: if file changed?)
+  # Actually, if the appid is not in list, the map above does nothing.
+  # We should check if we need to append.
+  # Safe bet: start_server usually called on installed games. 
+  # Let's just assume we only update existing records for now to avoid complexity of fetching name again.
+  
+  if jq -e --arg id "$appid" '.servers[] | select(.appid == $id)' "$KNOWN_SERVERS_FILE" >/dev/null 2>&1; then
+      mv "$tmp_json" "$KNOWN_SERVERS_FILE"
+  else
+      # Entry not found, ignore saving for now or append minimal?
+      # Let's append minimal to support "Manual Install" case
+      jq --arg id "$appid" --arg c "$cmd" \
+         '.servers += [{"name": "Custom Server", "appid": $id, "cmd": $c, "keywords": []}]' \
+         "$KNOWN_SERVERS_FILE" > "$tmp_json" && mv "$tmp_json" "$KNOWN_SERVERS_FILE"
+  fi
+  rm -f "$tmp_json"
+}
 
 # 保存到 known_servers.json
 save_known_server() {
