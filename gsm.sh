@@ -1247,13 +1247,7 @@ while true; do
        [[ "$appid" == "0" || -z "$appid" ]] && continue
        source_game_env "$appid"
        ;;
-    8)
-       clear
-       list_servers
-       appid=$(select_server_interactive "删除 AppID (序号/0返回): ")
-       [[ "$appid" == "0" || -z "$appid" ]] && continue
-       [ -n "$appid" ] && delete_server "$appid"
-       ;;
+
     8)
        clear
        run_full_tuning
