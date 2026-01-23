@@ -1,6 +1,34 @@
 #!/bin/bash
 set -euo pipefail
 
+# Watchdog Entry Point
+if [ "${1:-}" == "__watchdog_internal" ]; then
+    echo "Starting GSM Watchdog Loop..."
+    while true; do
+        # Find all game- session PIDs
+        # grep -o doesn't give PIDs easily with screen -ls, but we can parse
+        # screen -ls format:  1234.game-appid  (Detached)
+        
+        sessions=$(screen -ls | grep "\.game-[0-9]\+" | awk '{print $1}')
+        for s in $sessions; do
+            pid=${s%%.*}
+            if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+                # Dynamic Renice: Check CPU
+                # ps -p PID -o %cpu --no-headers
+                cpu=$(ps -p "$pid" -o %cpu --no-headers | awk '{print int($1)}' 2>/dev/null || echo 0)
+                
+                if [ "$cpu" -gt 80 ]; then
+                   renice -n -15 -p "$pid" >/dev/null 2>&1 || true
+                else
+                   renice -n -10 -p "$pid" >/dev/null 2>&1 || true
+                fi
+            fi
+        done
+        sleep 10
+    done
+    exit 0
+fi
+
 # =========================
 # NAT VPS Dedicated 管理脚本（含 Steam 搜索）
 # - 每个游戏按 AppID 存放在 servers/<AppID>
@@ -319,8 +347,58 @@ start_server() {
   fi # End check cmd
 
   echo "使用命令启动: $cmd"
-  screen -dmS "$session" bash -lc "exec $cmd"
+  
+  # Module 4: Game Specific Optimizations & Process Management
+  
+  # 1. CPU Affinity (Skip CPU 0)
+  local cpu_cores
+  cpu_cores=$(nproc)
+  local affinity_cmd=""
+  if [ "$cpu_cores" -gt 1 ]; then
+      # taskset -c 1-(N-1)
+      affinity_cmd="taskset -c 1-$((cpu_cores-1))"
+  fi
+  
+  # 2. Priority
+  local nice_cmd="nice -n -10 ionice -c 2 -n 0"
+  
+  # 3. Engine Specifics
+  local engine_args=""
+  
+  # Detect Java (Minecraft, PZ)
+  if [[ "$cmd" == *"java"* || "$cmd" == *"ProjectZomboid"* ]]; then
+     local total_mem
+     total_mem=$(free -m | awk '/^Mem:/{print $2}')
+     # Simple heuristic: 75% RAM for Heap
+     local heap=$((total_mem * 3 / 4))
+     # If not customized in cmd, might add java args. 
+     # But typically cmd is a script or binary.
+     # For ProjectZomboid64 (binary) it reads .json usually.
+     # If cmd is direct java command, we might append.
+     # Assuming user script handles args, but we can set environment variables if supported.
+     export _JAVA_OPTIONS="-XX:+UseG1GC -Xmx${heap}m"
+  fi
+  
+  # Source Engine (Approximate detection)
+  if [[ "$cmd" == *"srcds"* ]]; then
+     engine_args=" -high"
+  fi
+  
+  # vmtouch (Small file protection) - Optional
+  if command -v vmtouch >/dev/null 2>&1; then
+     print_info "Locking critical config files into memory..."
+     find "$data_dir" -name "*.json" -o -name "*.ini" -o -name "*.db" | xargs -r vmtouch -dl >/dev/null 2>&1 &
+  fi
+  
+  # Final Command Composition
+  # We wrap in screen, so we put nice/taskset inside
+  # screen -dmS session bash -lc "exec niceness taskset cmd"
+  
+  local final_exec="$nice_cmd $affinity_cmd $cmd $engine_args"
+  
+  screen -dmS "$session" bash -lc "exec $final_exec"
   echo "✅ 已在 screen 后台启动: $session"
+  echo "   (Optimized: $affinity_cmd $nice_cmd)"
   echo "   查看控制台命令: screen -r $session"
 }
 
@@ -910,6 +988,125 @@ steam_search_and_install() {
   set -e
 }
 
+# ========= Performance Tuning Module =========
+
+detect_env() {
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    systemd-detect-virt || echo "physical"
+  elif [ -f /sys/class/dmi/id/product_name ]; then
+    if grep -iqE "kvm|vmware|virtual|xen" /sys/class/dmi/id/product_name; then
+      echo "kvm"
+    else
+      echo "physical"
+    fi
+  else
+    echo "physical"
+  fi
+}
+
+tuning_sys_net() {
+  print_header "Module 1: System & Network Tuning"
+  
+  local virt
+  virt=$(detect_env)
+  print_info "Environment detected: $virt"
+
+  # Network Stack
+  print_info "Optimizing Network Stack (TCP BBR, Buffers)..."
+  
+  cat > /etc/sysctl.d/99-gsm-tuning.conf <<EOF
+# GSM Tuning
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.somaxconn = 65535
+net.core.rmem_max = 26214400
+net.core.wmem_max = 26214400
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+fs.file-max = 2097152
+vm.panic_on_oom = 0
+EOF
+  sysctl -p /etc/sysctl.d/99-gsm-tuning.conf >/dev/null 2>&1 || print_warn "sysctl reload failed"
+
+  # File Descriptors
+  print_info "Increasing File Descriptor Limits..."
+  if ! grep -q "root soft nofile 65535" /etc/security/limits.conf 2>/dev/null; then
+    echo "* soft nofile 65535" >> /etc/security/limits.conf
+    echo "* hard nofile 65535" >> /etc/security/limits.conf
+    echo "root soft nofile 65535" >> /etc/security/limits.conf
+    echo "root hard nofile 65535" >> /etc/security/limits.conf
+  fi
+  ulimit -n 65535 2>/dev/null || true
+
+  # Disk I/O (Only for KVM/Virtual)
+  if [[ "$virt" == "kvm" || "$virt" == "oracle" || "$virt" == "xen" ]]; then
+     print_info "Virtualization detected, setting I/O scheduler to none/noop..."
+     for dev in /sys/block/sd*/queue/scheduler; do
+       if [ -f "$dev" ]; then
+          echo "none" > "$dev" 2>/dev/null || echo "noop" > "$dev" 2>/dev/null || true
+       fi
+     done
+  fi
+}
+
+tuning_memory() {
+  print_header "Module 2: Memory Strategy"
+  
+  local total_mem
+  total_mem=$(free -m | awk '/^Mem:/{print $2}')
+  print_info "Total Memory: ${total_mem}MB"
+
+  if [ "$total_mem" -lt 4096 ]; then
+     # Case A: < 4GB -> Enable zRAM
+     print_info "Low Memory detected. Configuring zRAM..."
+     if command -v zramctl >/dev/null 2>&1; then
+         # Try manual setup
+         modprobe zram num_devices=1 2>/dev/null || true
+         if [ -b /dev/zram0 ]; then
+             # Reset if needed
+             swapoff /dev/zram0 2>/dev/null || true
+             zramctl --reset /dev/zram0 2>/dev/null || true
+             
+             local zsize=$((total_mem / 2))
+             echo "${zsize}M" > /sys/block/zram0/disksize || true
+             mkswap /dev/zram0 >/dev/null 2>&1 || true
+             swapon -p 100 /dev/zram0 >/dev/null 2>&1 || true
+             print_success "zRAM enabled on /dev/zram0 (${zsize}M)"
+         fi
+     fi
+     sysctl -w vm.swappiness=10 >/dev/null
+     
+  elif [ "$total_mem" -gt 8192 ]; then
+     # Case B: > 8GB
+     print_info "High Memory detected. Tuning for latency..."
+     sysctl -w vm.swappiness=0 >/dev/null
+     if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
+        echo "never" > /sys/kernel/mm/transparent_hugepage/enabled
+     fi
+  fi
+}
+
+start_watchdog_service() {
+   if screen -list | grep -q "gsm-watchdog"; then
+       print_info "Watchdog already running."
+   else
+       print_info "Starting GSM Watchdog..."
+       # Pass absolute path to self
+       local self_path
+       self_path=$(readlink -f "$0")
+       screen -dmS gsm-watchdog bash -c "$self_path __watchdog_internal"
+       print_success "Watchdog started."
+   fi
+}
+
+run_full_tuning() {
+    tuning_sys_net
+    tuning_memory
+    start_watchdog_service
+    print_success "System Performance Tuning Completed."
+    read -p "Press Enter to return..."
+}
+
 uninstall_gsm() {
   clear
   print_header "卸载 GSM (Game Server Manager)"
@@ -992,11 +1189,12 @@ while true; do
   list_servers
 
   echo -e "${C_BOLD}--- [ Main Menu ] ---${C_RESET}"
-  echo -e " ${C_CYAN}1)${C_RESET} List Installed Servers   ${C_CYAN}5)${C_RESET} Install by AppID (Direct)"
-  echo -e " ${C_CYAN}2)${C_RESET} Start Server           ${C_CYAN}6)${C_RESET} Backup Server Data"
-  echo -e " ${C_CYAN}3)${C_RESET} Stop Server            ${C_CYAN}7)${C_RESET} Exec Env Config"
-  echo -e " ${C_CYAN}4)${C_RESET} Search & Install       ${C_CYAN}8)${C_RESET} Delete Server ${C_RED}[DANGER]${C_RESET}"
-  echo -e " ${C_CYAN}0)${C_RESET} Exit                   ${C_RED}99)${C_RESET} Uninstall GSM ${C_RED}[DESTRUCTIVE]${C_RESET}"
+  echo -e " ${C_CYAN}1)${C_RESET} List Installed Servers   ${C_CYAN}6)${C_RESET} Backup Server Data"
+  echo -e " ${C_CYAN}2)${C_RESET} Start Server           ${C_CYAN}7)${C_RESET} Exec Env Config"
+  echo -e " ${C_CYAN}3)${C_RESET} Stop Server            ${C_CYAN}8)${C_RESET} System Performance Tuning ${C_GREEN}[NEW]${C_RESET}"
+  echo -e " ${C_CYAN}4)${C_RESET} Search & Install       ${C_CYAN}9)${C_RESET} Delete Server ${C_RED}[DANGER]${C_RESET}"
+  echo -e " ${C_CYAN}5)${C_RESET} Install by AppID       ${C_RED}99)${C_RESET} Uninstall GSM ${C_RED}[DESTRUCTIVE]${C_RESET}"
+  echo -e " ${C_CYAN}0)${C_RESET} Exit"
   echo ""
   
   read -p "Select option: " choice
@@ -1050,6 +1248,17 @@ while true; do
        source_game_env "$appid"
        ;;
     8)
+       clear
+       list_servers
+       appid=$(select_server_interactive "删除 AppID (序号/0返回): ")
+       [[ "$appid" == "0" || -z "$appid" ]] && continue
+       [ -n "$appid" ] && delete_server "$appid"
+       ;;
+    8)
+       clear
+       run_full_tuning
+       ;;
+    9)
        clear
        list_servers
        appid=$(select_server_interactive "删除 AppID (序号/0返回): ")
