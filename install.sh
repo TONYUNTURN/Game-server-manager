@@ -23,54 +23,53 @@ fi
 
 INSTALL_DIR="/opt/gsm"
 BIN_LINK="/usr/local/bin/gsm"
-REPO_RAW_URL="https://raw.githubusercontent.com/TONYUNTURN/Game-server-manager/refs/heads/main"
+REPO_URL="https://github.com/TONYUNTURN/Game-server-manager.git"
 
 print_info "Starting GSM installation..."
 
 # 1. Install Dependencies
 print_info "Installing dependencies..."
+# Added git to dependencies
 apt-get update -y
-apt-get install -y curl jq screen wget tar sudo lib32gcc-s1 lib32stdc++6
+apt-get install -y curl jq screen wget tar sudo git lib32gcc-s1 lib32stdc++6
 
-# 2. Prepare Directory
+# 2. Prepare Directory & Clone
 if [ -d "$INSTALL_DIR" ]; then
-    print_info "Directory $INSTALL_DIR exists. Updating..."
+    print_info "Directory $INSTALL_DIR exists."
+    # Check if it is a git repo
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        print_info "Updating via git..."
+        cd "$INSTALL_DIR"
+        git fetch origin
+        git reset --hard origin/main
+        print_success "Updated source code."
+    else
+        print_warn "Directory exists but is not a git repo. Backing up and reinstalling..."
+        mv "$INSTALL_DIR" "${INSTALL_DIR}_backup_$(date +%s)"
+        git clone "$REPO_URL" "$INSTALL_DIR"
+    fi
 else
-    mkdir -p "$INSTALL_DIR"
-    print_success "Created directory $INSTALL_DIR"
+    print_info "Cloning repository..."
+    git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
+if [ ! -f "$INSTALL_DIR/gsm.sh" ]; then
+    print_error "Installation failed: gsm.sh not found."
+    exit 1
+fi
+
+# 3. Create Directories
 mkdir -p "$INSTALL_DIR/common"
 mkdir -p "$INSTALL_DIR/servers"
 mkdir -p "$INSTALL_DIR/data"
 
-# 3. Download Scripts
-print_info "Downloading gsm.sh..."
-curl -sL "$REPO_RAW_URL/gsm.sh" -o "$INSTALL_DIR/gsm.sh"
-
-if [ ! -s "$INSTALL_DIR/gsm.sh" ]; then
-    print_error "Failed to download gsm.sh. Check network/URL."
-    exit 1
-fi
-
 chmod +x "$INSTALL_DIR/gsm.sh"
-print_success "Downloaded gsm.sh"
-
-print_info "Downloading known_servers.json..."
-curl -sL "$REPO_RAW_URL/known_servers.json" -o "$INSTALL_DIR/common/known_servers.json"
-# It's okay if this fails lightly, gsm.sh can try again, but let's warn
-if [ ! -s "$INSTALL_DIR/common/known_servers.json" ]; then
-     print_error "Warning: Failed to download known_servers.json. gsm.sh might need to fetch it later."
-else
-     print_success "Downloaded known_servers.json"
-fi
+# Also chmod libs if necessary, though sourcing doesn't strict require +x unless executed
+chmod +x "$INSTALL_DIR/lib/"*.sh 2>/dev/null || true
 
 # 4. Create Symlink
 if [ ! -d "/usr/local/bin" ]; then
     mkdir -p "/usr/local/bin"
-    # Ensure it's in PATH? Usually it is, but if it didn't exist...
-    # We can't easily change PATH for the user permanently here without editing rc files which is invasive.
-    # Just create it and hope standard PATH includes it or user adds it.
 fi
 
 if [ -L "$BIN_LINK" ]; then
