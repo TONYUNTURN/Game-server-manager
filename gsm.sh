@@ -910,6 +910,66 @@ steam_search_and_install() {
   set -e
 }
 
+uninstall_gsm() {
+  clear
+  print_header "卸载 GSM (Game Server Manager)"
+  echo -e "${C_RED}警告：此操作将永久删除 GSM 及其所有数据！${C_RESET}"
+  echo "包括："
+  echo "  - 所有已安装的游戏服务器 (servers/)"
+  echo "  - 所有游戏存档和配置数据 (data/)"
+  echo "  - 脚本本身及所有相关文件"
+  echo ""
+  echo "请务必确认您已备份重要数据！"
+  echo ""
+  
+  read -p "是否确认要卸载且明白数据将永久丢失？(y/n): " confirm_1
+  if [ "$confirm_1" != "y" ]; then
+    echo "操作已取消。"
+    return
+  fi
+  
+  echo ""
+  echo -e "${C_RED}FINAL WARNING: This is destructive.${C_RESET}"
+  read -p "请输入 'UNINSTALL' 以确认最终卸载: " confirm_2
+  
+  if [ "$confirm_2" != "UNINSTALL" ]; then
+    echo "确认失败，操作已取消。"
+    return
+  fi
+  
+  echo ""
+  echo "正在停止所有 GSM 管理的 Screen 会话..."
+  # Clean up screens
+  local running_screens
+  # Correct regex for grep to find sessions started by this logic if possible
+  # Or just look for "game-" prefix which we use.
+  running_screens=$(screen -ls | grep -o "game-[0-9]\+" | sort | uniq || true)
+  if [ -n "$running_screens" ]; then
+     for session in $running_screens; do
+        screen -S "$session" -X quit || true
+        echo "已停止 Session: $session"
+     done
+  fi
+  
+  # Remove symlink
+  if [ -L "/usr/local/bin/gsm" ]; then
+      echo "正在移除命令软链接..."
+      rm -f "/usr/local/bin/gsm" || true
+  fi
+  
+  echo "正在删除 GSM 目录: $BASE_DIR ..."
+  
+  # Self-destruct logic
+  # Use a subshell or nohup to ensure rm completes? 
+  # Actually, since bash script is loaded in memory/buffer mostly, it usually runs fine until next read.
+  # But to be safe, we can exec rm.
+  
+  rm -rf "$BASE_DIR"
+  
+  echo "卸载完成。Goodbye!"
+  exit 0
+}
+
 # ========= 主菜单 =========
 ensure_deps
 
@@ -927,7 +987,7 @@ while true; do
   echo -e " ${C_CYAN}2)${C_RESET} Start Server           ${C_CYAN}6)${C_RESET} Backup Server Data"
   echo -e " ${C_CYAN}3)${C_RESET} Stop Server            ${C_CYAN}7)${C_RESET} Exec Env Config"
   echo -e " ${C_CYAN}4)${C_RESET} Search & Install       ${C_CYAN}8)${C_RESET} Delete Server ${C_RED}[DANGER]${C_RESET}"
-  echo -e " ${C_CYAN}0)${C_RESET} Exit"
+  echo -e " ${C_CYAN}0)${C_RESET} Exit                   ${C_RED}99)${C_RESET} Uninstall GSM ${C_RED}[DESTRUCTIVE]${C_RESET}"
   echo ""
   
   read -p "Select option: " choice
@@ -986,6 +1046,9 @@ while true; do
        appid=$(select_server_interactive "删除 AppID (序号/0返回): ")
        [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && delete_server "$appid"
+       ;;
+    99)
+       uninstall_gsm
        ;;
     0) echo "Bye."; exit 0 ;;
     *) print_error "Invalid option" ;;
