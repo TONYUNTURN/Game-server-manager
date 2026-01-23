@@ -36,7 +36,7 @@ fi
 # - 若需要运行时安装（Java/Mono 等），在 data/<AppID>/env.sh 中放入安装命令，脚本会自动 source（可选）
 # =========================
 
-BASE_DIR=$(cd "$(dirname "$0")"; pwd)
+BASE_DIR=$(cd "$(dirname "$(readlink -f "$0")")"; pwd)
 COMMON_DIR="$BASE_DIR/common"
 STEAMCMD_DIR="$COMMON_DIR/steamcmd"
 SERVERS_DIR="$BASE_DIR/servers"
