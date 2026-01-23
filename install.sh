@@ -66,6 +66,13 @@ else
 fi
 
 # 4. Create Symlink
+if [ ! -d "/usr/local/bin" ]; then
+    mkdir -p "/usr/local/bin"
+    # Ensure it's in PATH? Usually it is, but if it didn't exist...
+    # We can't easily change PATH for the user permanently here without editing rc files which is invasive.
+    # Just create it and hope standard PATH includes it or user adds it.
+fi
+
 if [ -L "$BIN_LINK" ]; then
     rm "$BIN_LINK"
 fi
