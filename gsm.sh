@@ -1104,7 +1104,7 @@ run_full_tuning() {
     tuning_memory
     start_watchdog_service
     print_success "System Performance Tuning Completed."
-    read -p "Press Enter to return..."
+
 }
 
 uninstall_gsm() {
@@ -1176,6 +1176,45 @@ uninstall_gsm() {
   exit 0
 }
 
+update_self() {
+  print_header "更新 GSM 脚本"
+  local remote_url="https://raw.githubusercontent.com/TONYUNTURN/Game-server-manager/refs/heads/main/gsm.sh"
+  local tmp_file="/tmp/gsm_update_$$"
+  
+  echo "正在获取最新版本..."
+  if curl -L -s --max-time 10 "$remote_url" > "$tmp_file"; then
+     # Check if file has content
+     if [ ! -s "$tmp_file" ]; then
+        print_error "下载失败 (文件为空)"
+        rm -f "$tmp_file"
+        return
+     fi
+     
+     # Validate syntax
+     if ! bash -n "$tmp_file"; then
+        print_error "下载的脚本存在语法错误，放弃更新。"
+        rm -f "$tmp_file"
+        return
+     fi
+     
+     echo "下载成功，正在应用更新..."
+     
+     # Backup current
+     cp "$0" "${0}.bak"
+     
+     # Replace
+     mv "$tmp_file" "$0"
+     chmod +x "$0"
+     
+     print_success "更新完成！正在重启脚本..."
+     sleep 1
+     exec "$0"
+  else
+     print_error "无法连接到 GitHub 或下载失败。"
+     rm -f "$tmp_file"
+  fi
+}
+
 # ========= 主菜单 =========
 ensure_deps
 
@@ -1193,7 +1232,8 @@ while true; do
   echo -e " ${C_CYAN}2)${C_RESET} Start Server           ${C_CYAN}7)${C_RESET} Exec Env Config"
   echo -e " ${C_CYAN}3)${C_RESET} Stop Server            ${C_CYAN}8)${C_RESET} System Performance Tuning ${C_GREEN}[NEW]${C_RESET}"
   echo -e " ${C_CYAN}4)${C_RESET} Search & Install       ${C_CYAN}9)${C_RESET} Delete Server ${C_RED}[DANGER]${C_RESET}"
-  echo -e " ${C_CYAN}5)${C_RESET} Install by AppID       ${C_RED}99)${C_RESET} Uninstall GSM ${C_RED}[DESTRUCTIVE]${C_RESET}"
+  echo -e " ${C_CYAN}5)${C_RESET} Install by AppID       ${C_CYAN}10)${C_RESET} Update GSM Script"
+  echo -e " ${C_CYAN}0)${C_RESET} Exit                 ${C_RED}99)${C_RESET} Uninstall GSM ${C_RED}[DESTRUCTIVE]${C_RESET}"
   echo -e " ${C_CYAN}0)${C_RESET} Exit"
   echo ""
   
@@ -1258,6 +1298,10 @@ while true; do
        appid=$(select_server_interactive "删除 AppID (序号/0返回): ")
        [[ "$appid" == "0" || -z "$appid" ]] && continue
        [ -n "$appid" ] && delete_server "$appid"
+       ;;
+    10)
+       clear
+       update_self
        ;;
     99)
        uninstall_gsm
