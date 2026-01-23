@@ -959,14 +959,23 @@ uninstall_gsm() {
   
   echo "正在删除 GSM 目录: $BASE_DIR ..."
   
-  # Self-destruct logic
-  # Use a subshell or nohup to ensure rm completes? 
-  # Actually, since bash script is loaded in memory/buffer mostly, it usually runs fine until next read.
-  # But to be safe, we can exec rm.
+  # Change debug to see what path is being targeted
+  if [ -z "$BASE_DIR" ] || [ "$BASE_DIR" = "/" ]; then
+     echo "错误：BASE_DIR 为空或根目录，跳过删除以策安全。"
+     return
+  fi
+  
+  # Move out of the directory before deleting
+  cd /tmp || cd /
   
   rm -rf "$BASE_DIR"
   
-  echo "卸载完成。Goodbye!"
+  if [ -d "$BASE_DIR" ]; then
+     echo "错误：删除失败。请手动删除: $BASE_DIR"
+  else
+     echo "卸载完成。Goodbye!"
+  fi
+  
   exit 0
 }
 
